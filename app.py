@@ -103,14 +103,74 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
+CRITICAL_SYMPTOMS = [
+    "chest pain",
+    "chest tightness",
+    "shortness of breath",
+    "breathing difficulty",
+    "difficulty breathing",
+    "stroke",
+    "slurred speech",
+    "face drooping",
+    "one-sided weakness",
+    "severe bleeding",
+    "unconscious",
+    "loss of consciousness",
+    "seizure",
+    "anaphylaxis",
+    "blue lips",
+    "severe allergic",
+]
+
+MODERATE_SYMPTOMS = [
+    "fever",
+    "vomiting",
+    "diarrhea",
+    "headache",
+    "dizziness",
+    "rash",
+    "abdominal pain",
+    "persistent pain",
+    "cough",
+    "wheezing",
+    "high fever",
+]
+
+URGENCY_RANK = {
+    "Low": 0,
+    "Medium": 1,
+    "High": 2,
+}
+
+
+def detect_safety_urgency(symptoms_text: str) -> str:
+    symptoms_lower = symptoms_text.lower()
+
+    if any(term in symptoms_lower for term in CRITICAL_SYMPTOMS):
+        return "High"
+
+    if any(term in symptoms_lower for term in MODERATE_SYMPTOMS):
+        return "Medium"
+
+    return "Low"
+
+
+def strongest_urgency(*levels: str) -> str:
+    return max(levels, key=lambda level: URGENCY_RANK.get(level, 0))
+
+
 def build_triage_response(user_symptoms: str) -> tuple[str, str, str]:
     if target_lang_code != 'en':
         english_symptoms = GoogleTranslator(source='auto', target='en').translate(user_symptoms)
     else:
         english_symptoms = user_symptoms
 
+    safety_urgency = detect_safety_urgency(english_symptoms)
+
     prompt = f"""
     You are a highly capable medical triage assistant. Analyze the following patient symptoms: "{english_symptoms}".
+    Strict safety rule: If symptoms include chest pain, breathing difficulty/shortness of breath, stroke signs, severe bleeding, loss of consciousness, seizures, or anaphylaxis, you MUST classify urgency as "High" and must not downplay risk.
+    If symptoms are concerning but not immediately life-threatening, prefer "Medium" over "Low".
     Provide a preliminary triage assessment. You must return exactly this JSON structure:
     {{
         "Urgency_Level": "Low, Medium, or High",
@@ -127,6 +187,23 @@ def build_triage_response(user_symptoms: str) -> tuple[str, str, str]:
 
         triage_results = json.loads(response.text)
         translated_results = triage_results.copy()
+
+        model_urgency = triage_results.get("Urgency_Level", "Low")
+        final_urgency = strongest_urgency(model_urgency, safety_urgency)
+
+        if safety_urgency == "High":
+            triage_results["Urgency_Level"] = "High"
+            triage_results["Recommended_Specialist"] = "Emergency medicine doctor / emergency department"
+            triage_results["Immediate_First_Aid"] = (
+                "Call emergency services immediately. Do not drive yourself. Keep the person still and monitor breathing until help arrives."
+            )
+            triage_results["Dos_and_Donts"] = (
+                "Do: call emergency services now; Do: keep the person calm and still; Don't: give food or drink; Don't: delay medical care."
+            )
+        elif safety_urgency == "Medium" and final_urgency == "Low":
+            triage_results["Urgency_Level"] = "Medium"
+        else:
+            triage_results["Urgency_Level"] = final_urgency
 
         if target_lang_code != 'en':
             output_translator = GoogleTranslator(source='en', target=target_lang_code)
@@ -164,42 +241,18 @@ def build_triage_response(user_symptoms: str) -> tuple[str, str, str]:
 
 
 def fallback_triage_response(english_symptoms: str) -> tuple[str, str, str]:
-    symptoms_lower = english_symptoms.lower()
+    safety_urgency = detect_safety_urgency(english_symptoms)
 
-    high_risk_terms = [
-        "chest pain",
-        "shortness of breath",
-        "difficulty breathing",
-        "unconscious",
-        "fainting",
-        "severe bleeding",
-        "stroke",
-        "seizure",
-        "suicidal",
-        "confusion",
-    ]
-    medium_risk_terms = [
-        "fever",
-        "vomiting",
-        "diarrhea",
-        "headache",
-        "dizziness",
-        "rash",
-        "abdominal pain",
-        "pain",
-        "cough",
-    ]
-
-    if any(term in symptoms_lower for term in high_risk_terms):
+    if safety_urgency == "High":
         urgency_level = "High"
-        specialist = "Emergency medicine doctor"
-        first_aid = "Call emergency services immediately. Keep the person still and monitor breathing while waiting for help."
-        dos_and_donts = "Do: call emergency services right away; Do: keep the person calm and still; Don't: give food or drink; Don't: delay medical help."
+        specialist = "Emergency medicine doctor / emergency department"
+        first_aid = "Call emergency services immediately. Do not drive yourself. Keep the person still and monitor breathing while waiting for help."
+        dos_and_donts = "Do: call emergency services now; Do: keep the person calm and still; Don't: give food or drink; Don't: delay medical care."
         urgency_tag = "error"
-    elif any(term in symptoms_lower for term in medium_risk_terms):
+    elif safety_urgency == "Medium":
         urgency_level = "Medium"
         specialist = "General physician"
-        first_aid = "Rest, stay hydrated, and monitor symptoms closely. Seek medical care if symptoms worsen."
+        first_aid = "Rest, stay hydrated, and monitor symptoms closely. Seek medical care if symptoms worsen or do not improve."
         dos_and_donts = "Do: rest and drink fluids; Do: monitor symptoms; Don't: ignore worsening signs; Don't: self-medicate with random drugs."
         urgency_tag = "warning"
     else:
