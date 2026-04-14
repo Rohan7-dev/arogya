@@ -474,6 +474,52 @@ def create_pdf(summary_text: str) -> bytes:
     return output.encode("latin-1") if isinstance(output, str) else bytes(output)
 
 
+def create_pdf_with_fallback(summary_text: str) -> bytes:
+    try:
+        return create_pdf(summary_text)
+    except Exception:
+        try:
+            from fpdf import FPDF
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "PDF export is unavailable in the current Python environment. "
+                "Install it with: python -m pip install fpdf"
+            ) from exc
+
+        generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+        fallback_text = summary_text.replace("**", "").encode("ascii", errors="ignore").decode("ascii")
+
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_margins(15, 15, 15)
+
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.cell(0, 10, "Arogya Triage Report", ln=True)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(90, 90, 90)
+        pdf.cell(0, 6, f"Generated: {generated_at}", ln=True)
+        pdf.set_text_color(0, 0, 0)
+
+        pdf.ln(2)
+        pdf.set_draw_color(220, 220, 220)
+        pdf.line(15, pdf.get_y(), 195, pdf.get_y())
+        pdf.ln(6)
+
+        pdf.set_font("Helvetica", "B", 12)
+        pdf.cell(0, 8, "Clinic Summary", ln=True)
+        pdf.set_font("Helvetica", "", 11)
+        pdf.multi_cell(0, 7, fallback_text or "Unable to render localized text in PDF.")
+
+        pdf.ln(4)
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(110, 110, 110)
+        pdf.multi_cell(0, 5, "This report is a fallback export because the Unicode PDF font could not be loaded.")
+
+        output = pdf.output(dest="S")
+        return output.encode("latin-1") if isinstance(output, str) else bytes(output)
+
+
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
@@ -514,7 +560,7 @@ if user_symptoms:
                 with st.expander(f"📄 {ui_text('clinic_summary_title')}"):
                     st.write(summary_message)
                     try:
-                        pdf_data = create_pdf(summary_message)
+                        pdf_data = create_pdf_with_fallback(summary_message)
                         st.download_button(
                             ui_text("download_pdf"),
                             data=pdf_data,
